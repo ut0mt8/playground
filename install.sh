@@ -40,3 +40,4 @@ productbuild --distribution "$SRC/installer/Distribution.xml" \
 
 echo "[+] Created $OUTPUT"
 echo "    Install: sudo installer -pkg \"$OUTPUT\" -target /"
+open PluginPlayground-1.0.0.pkg
