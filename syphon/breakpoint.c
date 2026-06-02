@@ -8,6 +8,8 @@ void init_ds_template(void) {
         g_ds_template.__bvr[i] = g_targs[i].addr;
         g_ds_template.__bcr[i] = HW_BRK_EN;
     }
+    g_ds_template.__bvr[g_ntarg] = (uint64_t)-1;
+    g_ds_template.__bcr[g_ntarg] = HW_BRK_EN;
 }
 
 int install_hw_breakpoints(void) {

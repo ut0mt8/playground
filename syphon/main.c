@@ -89,11 +89,35 @@ int main(void) {
                 if (state.__pc == g_targs[i].addr) { cur = i; break; }
             }
             if (cur < 0) {
+                int si = find_step(thread);
+                if (si >= 0 && state.__pc == g_steps[si].ret_addr) {
+                    if (state.__x[0] == 0) {
+                        pid_t spawned;
+                        mach_vm_size_t s = 0;
+                        kr = mach_vm_read_overwrite(g_task,
+                                g_steps[si].child_pid_addr,
+                                sizeof(spawned),
+                                (mach_vm_address_t)&spawned, &s);
+                        if (kr == KERN_SUCCESS)
+                            printf(" spawned-pid=%d\n", spawned);
+                    }
+                    fflush(stdout);
+
+                    arm_debug_state64_t ds;
+                    mach_msg_type_number_t dsc = ARM_DEBUG_STATE64_COUNT;
+                    thread_get_state(thread, ARM_DEBUG_STATE64,
+                                     (thread_state_t)&ds, &dsc);
+                    ds.__bvr[g_steps[si].brk_idx] = 0;
+                    ds.__bcr[g_steps[si].brk_idx] = HW_BRK_DIS;
+                    ds.__bcr[g_steps[si].entry_idx] = HW_BRK_EN;
+                    thread_set_state(thread, ARM_DEBUG_STATE64,
+                                     (thread_state_t)&ds, dsc);
+                    remove_step(si);
+                }
                 send_reply(&msg.req.head, KERN_SUCCESS);
                 continue;
             }
 
-            printf("[%s]", g_targs[cur].name);
             uint64_t path_ptr = state.__x[g_targs[cur].path_reg];
             char path[PATH_MAX];
             mach_vm_size_t out = 0;
@@ -101,20 +125,40 @@ int main(void) {
                     (mach_vm_address_t)path, &out);
             if (kr == KERN_SUCCESS) {
                 path[out < PATH_MAX ? out : PATH_MAX - 1] = '\0';
-                printf(" %s\n", path);
-            } else {
-                printf(" path=0x%llx\n", path_ptr);
+                if (strcmp(path, "/usr/libexec/xpcproxy") != 0) {
+                    arm_debug_state64_t ds;
+                    mach_msg_type_number_t dsc = ARM_DEBUG_STATE64_COUNT;
+                    thread_get_state(thread, ARM_DEBUG_STATE64,
+                                     (thread_state_t)&ds, &dsc);
+                    ds.__bcr[cur] = HW_BRK_DIS;
+                    thread_set_state(thread, ARM_DEBUG_STATE64,
+                                     (thread_state_t)&ds, dsc);
+                    fflush(stdout);
+                    send_reply(&msg.req.head, KERN_SUCCESS);
+                    continue;
+                }
             }
 
-            uint64_t envp_addr = state.__x[5];
-            if (envp_addr) print_envp(g_task, envp_addr);
-            fflush(stdout);
+            uint64_t child_ptr = state.__x[0];
+            int ret_bk = g_ntarg;
 
             arm_debug_state64_t ds;
             mach_msg_type_number_t dsc = ARM_DEBUG_STATE64_COUNT;
             thread_get_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&ds, &dsc);
             ds.__bcr[cur] = HW_BRK_DIS;
+            ds.__bvr[ret_bk] = state.__lr;
+            ds.__bcr[ret_bk] = HW_BRK_EN;
             thread_set_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&ds, dsc);
+
+            int si = find_step(thread);
+            if (si >= 0) remove_step(si);
+            add_step(thread, ret_bk);
+            si = g_nsteps - 1;
+            g_steps[si].entry_idx = cur;
+            g_steps[si].ret_addr = state.__lr;
+            g_steps[si].child_pid_addr = child_ptr;
+
+            fflush(stdout);
 
             kr = send_reply(&msg.req.head, KERN_SUCCESS);
             if (kr != MACH_MSG_SUCCESS)

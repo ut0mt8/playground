@@ -34,6 +34,9 @@ void add_targ(void *func, int path_reg, const char *name);
 typedef struct {
     mach_port_t thread;
     int brk_idx;
+    int entry_idx;
+    mach_vm_address_t ret_addr;
+    uint64_t child_pid_addr;
 } step_state_t;
 
 extern step_state_t g_steps[MAX_STEPPING];
