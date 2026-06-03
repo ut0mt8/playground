@@ -1,11 +1,15 @@
 #include "syphon.h"
 #include "exe.h"
+#include "options_loader.h"
 #include <mach/task.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 task_t g_task;
 mach_port_t g_exc_port;
 static volatile sig_atomic_t g_running = 1;
+static FangsOptions g_opts;
+static time_t g_opts_mtime;
 
 static void on_signal(int sig) {
     (void)sig;
@@ -29,6 +33,18 @@ static void print_envp(task_t task, uint64_t addr) {
             printf("    %s\n", buf);
         }
     }
+}
+
+static void clear_brk_and_reply(mach_port_t thread, mach_msg_header_t *msg) {
+    arm_debug_state64_t ds;
+    mach_msg_type_number_t dsc = ARM_DEBUG_STATE64_COUNT;
+    kern_return_t kr = thread_get_state(thread, ARM_DEBUG_STATE64,
+                                        (thread_state_t)&ds, &dsc);
+    if (kr == KERN_SUCCESS) {
+        for (int i = 0; i <= g_ntarg; i++) ds.__bcr[i] = HW_BRK_DIS;
+        thread_set_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&ds, dsc);
+    }
+    send_reply(msg, KERN_SUCCESS);
 }
 
 int main(void) {
@@ -60,6 +76,12 @@ int main(void) {
     printf("[+] listening...\n");
     fflush(stdout);
 
+    g_opts = fangs_load_options();
+    struct stat opts_st;
+    g_opts_mtime = (stat("/opt/pluginplayground/current.options", &opts_st) == 0) ? opts_st.st_mtime : 0;
+    printf("[+] options: disablePAC=%d legacyAmmonia=%d pauseInjection=%d\n",
+           g_opts.disablePAC, g_opts.useLegacyAmmonia, g_opts.pauseInjection);
+
     while (g_running) {
         union {
             exc_req_t req;
@@ -71,6 +93,14 @@ int main(void) {
                       100, MACH_PORT_NULL);
         if (kr == MACH_RCV_TIMED_OUT) {
             install_hw_breakpoints();
+            struct stat st;
+            if (stat("/opt/pluginplayground/current.options", &st) == 0
+                && st.st_mtime != g_opts_mtime) {
+                g_opts = fangs_load_options();
+                g_opts_mtime = st.st_mtime;
+                printf("[+] options reloaded: disablePAC=%d legacyAmmonia=%d pauseInjection=%d\n",
+                       g_opts.disablePAC, g_opts.useLegacyAmmonia, g_opts.pauseInjection);
+            }
             continue;
         }
         if (kr != KERN_SUCCESS) continue;
@@ -78,11 +108,15 @@ int main(void) {
         mach_port_t thread = msg.req.thread.name;
 
         if (msg.req.exception == EXC_BREAKPOINT) {
+            if (g_opts.pauseInjection) {
+                clear_brk_and_reply(thread, &msg.req.head);
+                continue;
+            }
             arm_thread_state64_t state;
             mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
             if (thread_get_state(thread, ARM_THREAD_STATE64,
                                  (thread_state_t)&state, &sc) != KERN_SUCCESS) {
-                send_reply(&msg.req.head, KERN_SUCCESS);
+                clear_brk_and_reply(thread, &msg.req.head);
                 continue;
             }
 
@@ -104,7 +138,7 @@ int main(void) {
                 }
                 fflush(stdout);
                 if (path_ok) {
-                    if (strcmp("/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock", path) != 0) {
+                    if (g_opts.disablePAC) {
                         char *new_path = getready_process(path);
                         if (new_path) {
                             if (strcmp(new_path, path) != 0) {
@@ -131,21 +165,26 @@ int main(void) {
                         int count = 0;
                         int max = env_out / sizeof(char *);
                         for (int i = 0; i < max && env_ptrs[i]; i++) count++;
-                        const char *inject = "DYLD_INSERT_LIBRARIES=/private/var/ammonia/core/libopener.dylib";
-                        int found = 0;
-                        for (int i = 0; i < count && !found; i++) {
-                            char buf[512];
-                            mach_vm_size_t bs = 0;
-                            kern_return_t r = mach_vm_read_overwrite(ctask,
-                                    (mach_vm_address_t)env_ptrs[i], sizeof(buf) - 1,
-                                    (mach_vm_address_t)buf, &bs);
-                            if (r == KERN_SUCCESS && bs > 0) {
-                                buf[bs < sizeof(buf) ? bs : sizeof(buf) - 1] = '\0';
-                                if (strncmp(buf, "DYLD_INSERT_LIBRARIES=", 22) == 0)
-                                    found = 1;
+                        char *libs = fangs_build_dyld_insert_libraries(g_opts.useLegacyAmmonia);
+                        if (libs) {
+                            char inject_buf[4096];
+                            snprintf(inject_buf, sizeof(inject_buf), "DYLD_INSERT_LIBRARIES=%s", libs);
+                            free(libs);
+                            const char *inject = inject_buf;
+                            int found = 0;
+                            for (int i = 0; i < count && !found; i++) {
+                                char buf[512];
+                                mach_vm_size_t bs = 0;
+                                kern_return_t r = mach_vm_read_overwrite(ctask,
+                                        (mach_vm_address_t)env_ptrs[i], sizeof(buf) - 1,
+                                        (mach_vm_address_t)buf, &bs);
+                                if (r == KERN_SUCCESS && bs > 0) {
+                                    buf[bs < sizeof(buf) ? bs : sizeof(buf) - 1] = '\0';
+                                    if (strncmp(buf, "DYLD_INSERT_LIBRARIES=", 22) == 0)
+                                        found = 1;
+                                }
                             }
-                        }
-                        if (!found && count > 0) {
+                            if (!found && count > 0) {
                             size_t inject_len = strlen(inject) + 1;
                             mach_vm_address_t stack_dest =
                                 (state.__sp - 4096) & ~(mach_vm_address_t)0xF;
@@ -191,7 +230,8 @@ int main(void) {
                         }
                     }
                 }
-                arm_debug_state64_t cds;
+            }
+            arm_debug_state64_t cds;
                 mach_msg_type_number_t cdsc = ARM_DEBUG_STATE64_COUNT;
                 int brk_disabled = 0;
                 if (thread_get_state(thread, ARM_DEBUG_STATE64,

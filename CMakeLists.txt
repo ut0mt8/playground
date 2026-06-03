@@ -26,6 +26,7 @@ add_library(syphon STATIC
     syphon/mach_exc.c
     syphon/process.c
     syphon/exe.c
+    syphon/options_loader.c
 )
 
 target_include_directories(syphon PUBLIC

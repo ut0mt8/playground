@@ -73,17 +73,20 @@ export component MainWindow inherits Window {
                         spacing: 4px;
                         Button {
                             text: "Edit";
+                            horizontal-stretch: 1;
                             min-width: 72px;
                             clicked => { root.edit-tweak(tweak.name); }
                         }
                         Button {
                             text: tweak.disabled ? "Enable" : "Disable";
+                            horizontal-stretch: 1;
                             min-width: 72px;
                             clicked => { root.toggle-tweak(tweak.name); }
                         }
                         Button {
                             text: "Package";
                             visible: root.dev-tools-available;
+                            horizontal-stretch: 1;
                             min-width: 72px;
                             clicked => { root.package-tweak(tweak.name); }
                         }
