@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".pics/PlainLogo.png" width="128" alt="Plugin Playground">
+</p>
+
 # Plugin Playground
 
 An open-source general-purpose runtime tweak system for macOS Apple Silicon.
