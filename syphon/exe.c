@@ -1,6 +1,6 @@
 #include "exe.h"
 #include "log.h"
-#include <_string.h>
+#include <string.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <mach-o/loader.h>
